@@ -1,7 +1,8 @@
 use std::fmt::{self, Display};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum Val {
+    #[default]
     Nil,
     Bool(bool),
     Int(i64),
@@ -9,6 +10,8 @@ pub enum Val {
     Str(String),
     Raw(String),
     Tbl(Vec<(Option<String>, Val)>),
+    Call(String, Vec<Val>),
+    Note(String),
 }
 
 const KEYWORDS: [&str; 22] = [
@@ -34,7 +37,7 @@ pub fn quote(s: &str) -> String {
     o
 }
 
-fn ident(s: &str) -> bool {
+pub(crate) fn ident(s: &str) -> bool {
     let mut c = s.chars();
     c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_') && c.all(|x| x.is_ascii_alphanumeric() || x == '_') && !KEYWORDS.contains(&s)
 }
@@ -50,9 +53,11 @@ impl Display for Val {
             Val::Num(n) => write!(f, "{n:?}"),
             Val::Str(s) => f.write_str(&quote(s)),
             Val::Raw(s) => f.write_str(s),
+            Val::Call(n, a) => f.write_str(&call(n, a)),
+            Val::Note(_) => Ok(()),
             Val::Tbl(items) => {
                 f.write_str("{")?;
-                for (i, (k, v)) in items.iter().enumerate() {
+                for (i, (k, v)) in items.iter().filter(|(_, v)| !matches!(v, Val::Note(_))).enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
                     }

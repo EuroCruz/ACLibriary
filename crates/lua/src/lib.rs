@@ -1,4 +1,5 @@
 pub mod comp;
+pub mod data;
 pub mod dec;
 pub mod host;
 pub mod luac;
