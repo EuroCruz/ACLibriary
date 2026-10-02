@@ -1,0 +1,11 @@
+[package]
+name = "ac-sys"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+ac-core = { path = "../core" }
+
+[dev-dependencies]
+ac-net = { path = "../net" }

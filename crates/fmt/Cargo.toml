@@ -1,0 +1,8 @@
+[package]
+name = "ac-fmt"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+ac-core = { path = "../core" }
