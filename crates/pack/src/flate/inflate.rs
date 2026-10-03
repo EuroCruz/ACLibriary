@@ -1,35 +1,103 @@
-use crate::huff::Dec;
 use crate::flate::tables::*;
 use ac_core::{bad, Error, Res};
 
 struct Bits<'a> {
     d: &'a [u8],
     p: usize,
-    acc: u32,
+    acc: u64,
     n: u32,
 }
 
-impl<'a> Bits<'a> {
-    fn bit(&mut self) -> Res<u32> {
-        Ok(self.get(1)?)
+impl Bits<'_> {
+    fn fill(&mut self) {
+        while self.n <= 56 {
+            self.acc |= (self.d.get(self.p).copied().unwrap_or(0) as u64) << self.n;
+            self.p += 1;
+            self.n += 8;
+        }
+    }
+
+    fn used(&self) -> usize {
+        self.p - (self.n / 8) as usize
+    }
+
+    fn check(&self) -> Res<()> {
+        if self.p * 8 - self.n as usize > self.d.len() * 8 {
+            return Err(Error::Eof { at: self.d.len(), need: 1 });
+        }
+        Ok(())
     }
 
     fn get(&mut self, k: u32) -> Res<u32> {
-        while self.n < k {
-            let b = *self.d.get(self.p).ok_or(Error::Eof { at: self.p, need: 1 })?;
-            self.p += 1;
-            self.acc |= (b as u32) << self.n;
-            self.n += 8;
+        if self.n < k {
+            self.fill();
         }
-        let v = self.acc & ((1u64 << k) - 1) as u32;
-        self.acc = if k >= 32 { 0 } else { self.acc >> k };
+        let v = (self.acc & ((1u64 << k) - 1)) as u32;
+        self.acc >>= k;
         self.n -= k;
+        self.check()?;
         Ok(v)
     }
 
+    fn sym(&mut self, t: &Tab) -> Res<usize> {
+        if self.n < 15 {
+            self.fill();
+        }
+        let e = t.t[(self.acc & t.mask) as usize];
+        let k = (e & 15) as u32;
+        if k == 0 {
+            return bad("bad huffman code");
+        }
+        self.acc >>= k;
+        self.n -= k;
+        self.check()?;
+        Ok((e >> 4) as usize)
+    }
+
     fn align(&mut self) {
-        self.acc = 0;
-        self.n = 0;
+        let k = self.n % 8;
+        self.acc >>= k;
+        self.n -= k;
+    }
+}
+
+struct Tab {
+    t: Vec<u16>,
+    mask: u64,
+}
+
+impl Tab {
+    fn new(len: &[u8]) -> Res<Tab> {
+        let max = len.iter().copied().max().unwrap_or(0) as u32;
+        if max > 15 {
+            return bad("code too long");
+        }
+        let mut count = [0u32; 16];
+        len.iter().for_each(|&l| count[l as usize] += 1);
+        count[0] = 0;
+        let (mut code, mut next, mut left) = (0u32, [0u32; 16], 1i32);
+        for l in 1..16 {
+            left = (left << 1) - count[l] as i32;
+            if left < 0 {
+                return bad("over-subscribed code");
+            }
+            code = (code + count[l - 1]) << 1;
+            next[l] = code;
+        }
+        let bits = max.max(1);
+        let mut t = vec![0u16; 1 << bits];
+        for (s, &l) in len.iter().enumerate() {
+            if l == 0 {
+                continue;
+            }
+            let c = next[l as usize];
+            next[l as usize] += 1;
+            let r = (c.reverse_bits() >> (32 - l as u32)) as usize;
+            for j in (r..t.len()).step_by(1 << l) {
+                t[j] = (s as u16) << 4 | l as u16;
+            }
+        }
+        Ok(Tab { t, mask: (1u64 << bits) - 1 })
     }
 }
 
@@ -45,13 +113,10 @@ pub(crate) fn inflate_at(d: &[u8], hint: usize, max: usize) -> Res<(Vec<u8>, usi
     let mut b = Bits { d, p: 0, acc: 0, n: 0 };
     let mut out = Vec::with_capacity(hint.min(max));
     loop {
-        let last = b.bit()?;
+        let last = b.get(1)?;
         match b.get(2)? {
             0 => stored(&mut b, &mut out, max)?,
-            1 => {
-                let (l, di) = (Dec::new(&fixed_lit())?, Dec::new(&fixed_dist())?);
-                codes(&mut b, &mut out, &l, &di, max)?
-            }
+            1 => codes(&mut b, &mut out, &Tab::new(&fixed_lit())?, &Tab::new(&fixed_dist())?, max)?,
             2 => {
                 let (l, di) = dynamic(&mut b)?;
                 codes(&mut b, &mut out, &l, &di, max)?
@@ -62,28 +127,31 @@ pub(crate) fn inflate_at(d: &[u8], hint: usize, max: usize) -> Res<(Vec<u8>, usi
             break;
         }
     }
-    let used = b.p - (b.n / 8) as usize;
-    Ok((out, used))
+    Ok((out, b.used()))
 }
 
 fn stored(b: &mut Bits, out: &mut Vec<u8>, max: usize) -> Res<()> {
     b.align();
-    let h = b.d.get(b.p..b.p + 4).ok_or(Error::Eof { at: b.p, need: 4 })?;
-    let (n, c) = (u16::from_le_bytes([h[0], h[1]]), u16::from_le_bytes([h[2], h[3]]));
-    if n != !c {
+    let (n, c) = (b.get(16)?, b.get(16)?);
+    if n != !c & 0xffff {
         return bad("stored length");
     }
-    b.p += 4;
-    let s = b.d.get(b.p..b.p + n as usize).ok_or(Error::Eof { at: b.p, need: n as usize })?;
-    if out.len() + s.len() > max {
+    if out.len() + n as usize > max {
         return bad("output limit");
     }
+    let mut left = n as usize;
+    while left > 0 && b.n >= 8 {
+        out.push(b.get(8)? as u8);
+        left -= 1;
+    }
+    let at = b.used();
+    let s = b.d.get(at..at + left).ok_or(Error::Eof { at, need: left })?;
     out.extend_from_slice(s);
-    b.p += n as usize;
+    *b = Bits { d: b.d, p: at + left, acc: 0, n: 0 };
     Ok(())
 }
 
-fn dynamic(b: &mut Bits) -> Res<(Dec, Dec)> {
+fn dynamic(b: &mut Bits) -> Res<(Tab, Tab)> {
     let nl = b.get(5)? as usize + 257;
     let nd = b.get(5)? as usize + 1;
     let nc = b.get(4)? as usize + 4;
@@ -94,11 +162,11 @@ fn dynamic(b: &mut Bits) -> Res<(Dec, Dec)> {
     for &i in CL_ORDER.iter().take(nc) {
         cl[i] = b.get(3)? as u8;
     }
-    let cd = Dec::new(&cl)?;
+    let cd = Tab::new(&cl)?;
     let mut len = vec![0u8; nl + nd];
     let mut i = 0;
     while i < nl + nd {
-        let s = cd.decode(|| b.bit())?;
+        let s = b.sym(&cd)?;
         if s < 16 {
             len[i] = s as u8;
             i += 1;
@@ -123,12 +191,12 @@ fn dynamic(b: &mut Bits) -> Res<(Dec, Dec)> {
     if len[256] == 0 {
         return bad("missing end of block");
     }
-    Ok((Dec::new(&len[..nl])?, Dec::new(&len[nl..])?))
+    Ok((Tab::new(&len[..nl])?, Tab::new(&len[nl..])?))
 }
 
-fn codes(b: &mut Bits, out: &mut Vec<u8>, lit: &Dec, dist: &Dec, max: usize) -> Res<()> {
+fn codes(b: &mut Bits, out: &mut Vec<u8>, lit: &Tab, dist: &Tab, max: usize) -> Res<()> {
     loop {
-        let s = lit.decode(|| b.bit())? as usize;
+        let s = b.sym(lit)?;
         if s < 256 {
             if out.len() >= max {
                 return bad("output limit");
@@ -144,7 +212,7 @@ fn codes(b: &mut Bits, out: &mut Vec<u8>, lit: &Dec, dist: &Dec, max: usize) -> 
             return bad("bad length symbol");
         }
         let len = LEN_BASE[s] as usize + b.get(LEN_EXTRA[s] as u32)? as usize;
-        let ds = dist.decode(|| b.bit())? as usize;
+        let ds = b.sym(dist)?;
         if ds >= 30 {
             return bad("bad distance symbol");
         }
@@ -155,9 +223,12 @@ fn codes(b: &mut Bits, out: &mut Vec<u8>, lit: &Dec, dist: &Dec, max: usize) -> 
         if out.len() + len > max {
             return bad("output limit");
         }
-        let start = out.len() - d;
-        for k in 0..len {
-            out.push(out[start + k]);
+        let (mut s, mut left) = (out.len() - d, len);
+        while left > 0 {
+            let k = left.min(out.len() - s);
+            out.extend_from_within(s..s + k);
+            s += k;
+            left -= k;
         }
     }
 }

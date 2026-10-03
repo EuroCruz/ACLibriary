@@ -34,6 +34,15 @@ pub fn quote(s: &str, utf8: bool) -> String {
     o
 }
 
+pub fn lit(s: &str, utf8: bool) -> String {
+    let plain = s.chars().all(|c| matches!(c, ' '..='~') || utf8 && !c.is_control());
+    if plain && s.contains('\\') && !s.contains("]]") && !s.ends_with(']') {
+        format!("[[{s}]]")
+    } else {
+        quote(s, utf8)
+    }
+}
+
 impl Val {
     pub fn int(&self) -> Option<i64> {
         match self {
@@ -107,7 +116,7 @@ impl Pr<'_> {
     fn flat(&self, v: &Val) -> Option<String> {
         let u = self.s.utf8;
         Some(match v {
-            Val::Str(s) => quote(s, u),
+            Val::Str(s) => lit(s, u),
             Val::Note(_) => return None,
             Val::Call(n, a) => match a.as_slice() {
                 [Val::Str(s)] => format!("{n}{}", quote(s, u)),
@@ -618,5 +627,10 @@ mod t {
         let strip = |v: &Val| -> Vec<(Option<String>, Val)> { v.items().iter().filter(|(_, x)| !matches!(x, Val::Note(_))).cloned().collect() };
         assert_eq!(strip(&back), strip(&v).into_iter().map(|(k, x)| (k, if let Val::Tbl(t) = x { Val::Tbl(t.into_iter().filter(|(_, y)| !matches!(y, Val::Note(_))).collect()) } else { x })).collect::<Vec<_>>());
         assert_eq!(quote("é\u{1}", false), "\"\\195\\169\\001\"");
+        for x in [r"d:\Scripts\a.luac", r"a\b]", r"a]]\b", "a\\\nb", "plain"] {
+            assert_eq!(parse(&lit(x, true)).unwrap(), Val::Str(x.into()), "{x}");
+        }
+        assert_eq!(lit(r"d:\x", true), r"[[d:\x]]");
+        assert_eq!(parse(r#"{ [[a\b]], ["k"] = [[c\]] }"#).unwrap(), Val::Tbl(vec![(None, r"a\b".into()), kv("k", r"c\".into())]));
     }
 }

@@ -1,2 +1,12 @@
-target
+/target
 Cargo.lock
+**/*.rs.bk
+*.pdb
+
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

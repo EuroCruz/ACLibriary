@@ -4,7 +4,7 @@ mod tile;
 
 pub use bc::{bc1, bc2, bc3, bc4, bc5, bc7, block_bytes, decode, encode, Bc};
 pub use dds::{Dds, Fmt};
-pub use tile::{morton, tile360, tiled360_len, unmorton, untile360};
+pub use tile::{morton, tile360, tile360_mips, tiled360_len, tiled360_mips_len, unmorton, untile360, untile360_mips};
 
 pub type Px = [u8; 4];
 

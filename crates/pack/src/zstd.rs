@@ -55,6 +55,12 @@ impl<'a> Back<'a> {
             return 0;
         }
         self.off -= n as i64;
+        if self.off >= 0 {
+            let (byte, bit) = ((self.off >> 3) as usize, (self.off & 7) as u32);
+            if let Some(b) = self.d.get(byte..byte + 8) {
+                return (u64::from_le_bytes(b.try_into().unwrap()) >> bit) & ((1u64 << n) - 1);
+            }
+        }
         let (at, n, sh) = if self.off < 0 { (0u64, (n as i64 + self.off).max(0) as u32, (-self.off) as u32) } else { (self.off as u64, n, 0) };
         if n == 0 {
             return 0;
@@ -443,13 +449,12 @@ fn block(c: &mut Ctx, d: &[u8], o: &mut Vec<u8>) -> Res<()> {
         if off == 0 || off > o.len() {
             return bad("bad match offset");
         }
-        let st = o.len() - off;
-        if off >= mlen {
-            o.extend_from_within(st..st + mlen);
-        } else {
-            for k in 0..mlen {
-                o.push(o[st + k]);
-            }
+        let (mut s, mut left) = (o.len() - off, mlen);
+        while left > 0 {
+            let k = left.min(o.len() - s);
+            o.extend_from_within(s..s + k);
+            s += k;
+            left -= k;
         }
     }
     if b.off != 0 {
