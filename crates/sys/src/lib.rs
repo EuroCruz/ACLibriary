@@ -8,5 +8,6 @@ pub mod draw;
 pub mod hook;
 pub mod input;
 pub mod mem;
+pub mod proxy;
 pub mod web;
 pub mod win;

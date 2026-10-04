@@ -44,6 +44,13 @@ pub fn lit(s: &str, utf8: bool) -> String {
 }
 
 impl Val {
+    pub fn bool(&self) -> Option<bool> {
+        match self {
+            Val::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
     pub fn int(&self) -> Option<i64> {
         match self {
             Val::Int(i) => Some(*i),

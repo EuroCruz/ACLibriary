@@ -1,4 +1,4 @@
-use crate::win::{self, CallWindowProcA, GetAsyncKeyState, GetCurrentProcessId, GetForegroundWindow, GetWindowThreadProcessId, SetWindowLongPtr, GWLP_WNDPROC, HWND};
+use crate::win::{self, CallWindowProcA, GetAsyncKeyState, GetCurrentProcessId, GetRawInputDeviceInfoW, GetRawInputDeviceList, GetForegroundWindow, GetWindowThreadProcessId, SetWindowLongPtr, GWLP_WNDPROC, HWND};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
@@ -58,6 +58,21 @@ pub fn name(k: i32) -> String {
         0x70..=0x87 => format!("F{}", k - 0x6f),
         _ => NAMES.iter().find(|x| x.0 == k).map_or_else(|| format!("0x{k:02X}"), |x| x.1.to_string()),
     }
+}
+
+pub fn scan_name(dik: u8) -> Option<&'static str> {
+    const ROW: [&str; 0x59] = [
+        "", "Esc", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace", "Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "Enter", "Ctrl",
+        "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "`", "Shift", "\\", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Right Shift", "Num *", "Alt", "Space",
+        "Caps Lock", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "Num Lock", "Scroll Lock", "Num 7", "Num 8", "Num 9", "Num -", "Num 4", "Num 5", "Num 6",
+        "Num +", "Num 1", "Num 2", "Num 3", "Num 0", "Num Del", "Sys Req", "", "\\", "F11", "F12",
+    ];
+    const EXT: &[(u8, &str)] = &[
+        (0x7c, "F13"), (0x7d, "F14"), (0x7e, "F15"), (0x7f, "F16"), (0x9c, "Num Enter"), (0x9d, "Right Ctrl"), (0xb5, "Num /"), (0xb7, "Prnt Scrn"), (0xb8, "Right Alt"),
+        (0xc5, "Pause"), (0xc7, "Home"), (0xc8, "Up"), (0xc9, "Page Up"), (0xcb, "Left"), (0xcd, "Right"), (0xcf, "End"), (0xd0, "Down"), (0xd1, "Page Down"),
+        (0xd2, "Insert"), (0xd3, "Delete"), (0xdb, "Left Windows"), (0xdc, "Right Windows"), (0xdd, "Application"),
+    ];
+    ROW.get(dik as usize).copied().filter(|n| !n.is_empty()).or_else(|| EXT.iter().find(|e| e.0 == dik).map(|e| e.1))
 }
 
 pub fn down(k: i32) -> bool {
@@ -234,6 +249,37 @@ fn xinput() -> Option<(GetState, SetState)> {
     Some(unsafe { (std::mem::transmute::<usize, GetState>(g), std::mem::transmute::<usize, SetState>(s)) })
 }
 
+pub fn xinput_ids() -> Vec<(u16, u16)> {
+    let mut n = 0u32;
+    let sz = std::mem::size_of::<[usize; 2]>() as u32;
+    unsafe { GetRawInputDeviceList(std::ptr::null_mut(), &mut n, sz) };
+    let mut list = vec![[0usize; 2]; n as usize];
+    let got = unsafe { GetRawInputDeviceList(list.as_mut_ptr(), &mut n, sz) };
+    if got == u32::MAX {
+        return Vec::new();
+    }
+    let mut ids = Vec::new();
+    for d in &list[..got as usize] {
+        let mut len = 0u32;
+        unsafe { GetRawInputDeviceInfoW(d[0] as _, 0x2000_0007, std::ptr::null_mut(), &mut len) };
+        let mut b = vec![0u16; len as usize + 1];
+        if unsafe { GetRawInputDeviceInfoW(d[0] as _, 0x2000_0007, b.as_mut_ptr().cast(), &mut len) } == u32::MAX {
+            continue;
+        }
+        if let Some(id) = xinput_id(&String::from_utf16_lossy(&b)).filter(|id| !ids.contains(id)) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+pub fn xinput_id(path: &str) -> Option<(u16, u16)> {
+    let p = path.to_ascii_uppercase();
+    let hex = |k: &str| p.find(k).and_then(|i| p.get(i + k.len()..i + k.len() + 4)).and_then(|h| u16::from_str_radix(h, 16).ok());
+    p.contains("IG_").then_some(())?;
+    Some((hex("VID_")?, hex("PID_")?))
+}
+
 pub fn stick(x: i16, y: i16, dz: f32) -> (f32, f32) {
     let (x, y) = (x as f32, y as f32);
     let m = (x * x + y * y).sqrt();
@@ -266,6 +312,10 @@ impl Pad {
 
     pub fn available() -> bool {
         xinput().is_some()
+    }
+
+    pub fn connected() -> Vec<u32> {
+        (0..4).filter(|&id| Pad::new(id).poll()).collect()
     }
 
     pub fn poll(&mut self) -> bool {
@@ -392,6 +442,22 @@ mod t {
     }
 
     #[test]
+    fn scan_names_are_us_layout() {
+        assert_eq!((scan_name(0x10), scan_name(0x39), scan_name(0x2b), scan_name(0x45), scan_name(0xc5), scan_name(0x9d)), (Some("Q"), Some("Space"), Some("\\"), Some("Num Lock"), Some("Pause"), Some("Right Ctrl")));
+        assert_eq!((scan_name(0), scan_name(0x55), scan_name(0x80), scan_name(0xff)), (None, None, None, None));
+        if unsafe { win::ActivateKeyboardLayout(0x0409_0409 as _, 0) }.is_null() {
+            return;
+        }
+        for k in (1..=0xffu8).filter(|k| !matches!(k, 0x45 | 0xc5)) {
+            if let Some(n) = scan_name(k) {
+                let mut b = [0u16; 64];
+                let l = unsafe { win::GetKeyNameTextW(((k as i32 & 0x7f) << 16) | ((k as i32 & 0x80) << 17), b.as_mut_ptr(), 64) };
+                assert_eq!(String::from_utf16_lossy(&b[..l as usize]), n, "{k:#x}");
+            }
+        }
+    }
+
+    #[test]
     fn keys_and_combos() {
         let mut k = Keys::new();
         let mut s = [false; 256];
@@ -422,6 +488,14 @@ mod t {
         k.feed(s);
         assert!(!c.hit(&k));
         assert_eq!(k.any_hit(), None);
+    }
+
+    #[test]
+    fn xinput_paths() {
+        assert_eq!(xinput_id(r"\\?\HID#VID_045E&PID_02FF&IG_00#7&1d&0&0000#{4d1e55b2}"), Some((0x045e, 0x02ff)));
+        assert_eq!(xinput_id(r"\\?\hid#vid_054c&pid_09cc&mi_03#8&2a&0&0000#{4d1e55b2}"), None);
+        assert!(xinput_ids().iter().all(|&(v, _)| v != 0));
+        assert!(Pad::connected().iter().all(|&id| id < 4));
     }
 
     #[test]
