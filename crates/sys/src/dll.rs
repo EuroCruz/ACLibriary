@@ -151,7 +151,7 @@ unsafe extern "system" fn crash(info: *const [usize; 2]) -> i32 {
 unsafe extern "system" fn fault(info: *const [usize; 2]) -> i32 {
     let (code, text) = describe(info);
     if matches!(code, 0xc000_0005 | 0xc000_001d | 0xc000_0094 | 0xc000_0096 | 0xc000_00fd | 0xc000_0409) && FAULTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8 {
-        log(&format!("fault: {text}"));
+        log(&format!("fault: {text};{} stack: {}", registers((*info)[1] as *const u8), calls((*info)[1] as *const u8)));
     }
     0
 }
@@ -196,6 +196,22 @@ fn stack_end(sp: usize) -> usize {
     }
     let m = unsafe { m.assume_init() };
     (m.base + m.size).min(sp + 0x4000)
+}
+
+#[cfg(target_pointer_width = "32")]
+unsafe fn registers(ctx: *const u8) -> String {
+    [("eax", 0xb0), ("ebx", 0xa4), ("ecx", 0xac), ("edx", 0xa8), ("esi", 0xa0), ("edi", 0x9c), ("ebp", 0xb4)].iter().map(|&(n, o)| format!(" {n}=0x{:08x}", *(ctx.add(o) as *const u32))).collect()
+}
+
+#[cfg(target_pointer_width = "64")]
+unsafe fn registers(_ctx: *const u8) -> String {
+    String::new()
+}
+
+unsafe fn calls(ctx: *const u8) -> String {
+    let sp = *(ctx.add(CTX.4) as *const usize);
+    let ps = std::mem::size_of::<usize>();
+    (sp..stack_end(sp)).step_by(ps).map(|a| *(a as *const usize)).filter(|&a| code(a)).take(16).map(|a| format!("0x{a:08x} {}", place(a))).collect::<Vec<_>>().join(", ")
 }
 
 pub fn sample(thread: u32) -> Option<String> {

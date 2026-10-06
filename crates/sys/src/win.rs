@@ -85,6 +85,7 @@ extern "system" {
     pub fn LoadLibraryW(name: *const u16) -> HMODULE;
     pub fn GetSystemDirectoryW(buf: *mut u16, n: u32) -> u32;
     pub fn ExitProcess(code: u32) -> !;
+    pub fn TerminateProcess(h: HANDLE, code: u32) -> i32;
     pub fn SetUnhandledExceptionFilter(f: usize) -> usize;
     pub fn AddVectoredExceptionHandler(first: u32, f: usize) -> *mut c_void;
     pub fn FreeLibrary(m: HMODULE) -> BOOL;
@@ -146,6 +147,7 @@ extern "system" {
     pub fn GetSystemMetrics(i: i32) -> i32;
     pub fn MessageBoxA(w: HWND, text: *const c_char, cap: *const c_char, kind: u32) -> i32;
     pub fn MessageBoxW(w: HWND, text: *const u16, cap: *const u16, kind: u32) -> i32;
+    pub fn SetWindowTextW(w: HWND, text: *const u16) -> i32;
     pub fn ClipCursor(r: *const RectI) -> BOOL;
     pub fn IsWindow(w: HWND) -> BOOL;
     pub fn GetDC(w: HWND) -> HDC;
